@@ -1,0 +1,114 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import tensorflow as tf
+
+# Load MediaPipe hand tracking
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands()
+
+# Load your trained model
+model = tf.keras.models.load_model("gesture_model.h5")
+
+# Define labels for the grid
+labels = [
+    ['1', '2', '3', 'Clear'],
+    ['4', '5', '6', 'Cancel'],
+    ['7', '8', '9', 'Enter'],
+    ['0', '', '', '']
+]
+
+# Start webcam
+cap = cv2.VideoCapture(0)
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        continue
+
+    frame = cv2.flip(frame, 1)  # Flip horizontally
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    h, w, _ = frame.shape  # Get frame dimensions
+
+    # Grid cell size
+    cell_width = w // 4
+    cell_height = h // 4
+
+    # Draw the 4x4 grid and display numbers
+    for i in range(4):
+        for j in range(4):
+            cell_x1, cell_y1 = j * cell_width, i * cell_height
+            cell_x2, cell_y2 = (j + 1) * cell_width, (i + 1) * cell_height
+
+            # Draw grid cell
+            cv2.rectangle(frame, (cell_x1, cell_y1), (cell_x2, cell_y2), (0, 255, 0), 2)
+
+            # Display number inside the cell
+            label_text = labels[i][j]
+            if label_text:
+                text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
+                text_x = cell_x1 + (cell_width - text_size[0]) // 2
+                text_y = cell_y1 + (cell_height + text_size[1]) // 2
+                cv2.putText(frame, label_text, (text_x, text_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+    # Process with MediaPipe
+    results = hands.process(rgb_frame)
+    predicted_digit = None
+    mediapipe_result = None
+
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
+            # Extract fingertip position
+            index_finger_tip = hand_landmarks.landmark[8]
+            x, y = int(index_finger_tip.x * w), int(index_finger_tip.y * h)
+
+            # Determine which grid cell the fingertip is in
+            grid_x, grid_y = x // cell_width, y // cell_height
+
+            # Highlight the selected cell
+            cell_x1, cell_y1 = grid_x * cell_width, grid_y * cell_height
+            cell_x2, cell_y2 = (grid_x + 1) * cell_width, (grid_y + 1) * cell_height
+            cv2.rectangle(frame, (cell_x1, cell_y1), (cell_x2, cell_y2), (0, 0, 255), 3)
+
+            # Display the selected label
+            selected_label = labels[grid_y][grid_x]
+            mediapipe_result = selected_label
+
+            # Crop small region around fingertip
+            crop_size = 50
+            x1, y1 = max(0, x - crop_size), max(0, y - crop_size)
+            x2, y2 = min(w, x + crop_size), min(h, y + crop_size)
+            fingertip_region = frame[y1:y2, x1:x2]
+
+            # Preprocess for model (Resize, Normalize)
+            input_image = cv2.resize(fingertip_region, (64, 64))  # Change to 64x64
+            input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2GRAY)
+            input_image = input_image / 255.0
+            input_image = input_image.reshape(1, 64, 64, 1)  # Change to (64,64,1)
+
+            # Predict using model
+            model_prediction = model.predict(input_image)
+            predicted_digit = np.argmax(model_prediction)
+
+    # Determine the final output based on confidence
+    if predicted_digit is not None and mediapipe_result is not None:
+        final_output = predicted_digit if model_prediction.max() > 0.7 else mediapipe_result
+    elif predicted_digit is not None:
+        final_output = predicted_digit
+    else:
+        final_output = mediapipe_result
+
+    # Display Prediction
+    if final_output is not None:
+        cv2.putText(frame, f"Final Prediction: {final_output}", (30, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+    # Show output
+    cv2.imshow("Hand Gesture Recognition", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
